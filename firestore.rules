@@ -1,0 +1,111 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Application: English Vocabulary Notebook (영어 단어장)
+// Project ID: englishwordtest-bdfcd
+//
+// Collection: /users/{userId}/words/{wordId}
+// Document ID: wordId (auto-generated or unique word identifier)
+// Fields:
+//   - word: string (required, 1-200 chars) - The target English vocabulary word
+//   - meaning: string (required, 1-1000 chars) - Meaning, definition, or translation
+//   - example: string (optional, 0-1000 chars) - Example sentence or usage
+//   - isMemorized: boolean (required) - Memorization / study status flag
+//   - createdAt: timestamp (optional, immutable) - Document creation timestamp
+//   - updatedAt: timestamp (optional) - Document last modified timestamp
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user matches the target userId
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validate required fields exist in data
+    function hasRequiredFields(data) {
+      return data.keys().hasAll(['word', 'meaning', 'isMemorized']);
+    }
+
+    // Validate that the document contains only allowed fields (no schema pollution)
+    function hasOnlyAllowedFields(data) {
+      return data.keys().hasOnly([
+        'word',
+        'meaning',
+        'example',
+        'isMemorized',
+        'createdAt',
+        'updatedAt'
+      ]);
+    }
+
+    // Ensure createdAt field cannot be modified or removed once set
+    function isCreatedAtImmutable() {
+      return !('createdAt' in resource.data) ||
+        ('createdAt' in request.resource.data &&
+         request.resource.data.createdAt == resource.data.createdAt);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // Validates the Word document data structure on create and update
+    function isValidWord(data) {
+      return hasRequiredFields(data) &&
+        hasOnlyAllowedFields(data) &&
+        data.word is string &&
+        data.word.size() >= 1 &&
+        data.word.size() <= 200 &&
+        data.meaning is string &&
+        data.meaning.size() >= 1 &&
+        data.meaning.size() <= 1000 &&
+        data.isMemorized is bool &&
+        (!('example' in data) || (data.example is string && data.example.size() <= 1000)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // ===============================================================
+    // Default Deny Rule
+    // ===============================================================
+    // Deny all reads and writes by default across any unmapped collection
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Words Subcollection Rules
+    // Path: /users/{userId}/words/{wordId}
+    // ===============================================================
+    match /users/{userId}/words/{wordId} {
+      // Only the authenticated owner can read their words
+      allow read: if isOwner(userId);
+
+      // Only the authenticated owner can delete their words
+      allow delete: if isOwner(userId);
+
+      // Only the authenticated owner can create valid words
+      allow create: if isOwner(userId) && isValidWord(request.resource.data);
+
+      // Only the authenticated owner can update their words, maintaining validity and immutability
+      allow update: if isOwner(userId) &&
+                    isValidWord(request.resource.data) &&
+                    isCreatedAtImmutable();
+    }
+  }
+}
